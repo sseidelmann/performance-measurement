@@ -1,0 +1,15 @@
+#!/usr/bin/env php
+<?php
+/**
+ * @package bin
+ * @author Sebastian Seidelmann <sebastian.seidelmann@googlemail.com>
+ */
+
+if (PHP_SAPI !== 'cli') {
+    echo 'Warning: Graph should be invoked via the CLI version of PHP, not the '.PHP_SAPI.' SAPI'.PHP_EOL;
+}
+
+(@include_once __DIR__ . '/../vendor/autoload.php') || @include_once __DIR__ . '/../../../autoload.php';
+
+$meter = new \Sseidelmann\PerformanceMeasurement\Meter();
+$meter->startMeasurement();
