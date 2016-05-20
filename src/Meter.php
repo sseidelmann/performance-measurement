@@ -7,6 +7,10 @@
 
 namespace Sseidelmann\PerformanceMeasurement;
 
+use Symfony\Component\Console\Formatter\OutputFormatter;
+use Symfony\Component\Console\Formatter\OutputFormatterStyle;
+use Symfony\Component\Console\Helper\Table;
+use Symfony\Component\Console\Output\ConsoleOutput;
 use Symfony\Component\Yaml\Exception\ParseException;
 use Symfony\Component\Yaml\Yaml;
 use Ulrichsg\Getopt\Getopt;
@@ -24,6 +28,12 @@ class Meter
      * @var int
      */
     const VERSION = '1.0';
+
+    /**
+     * Defines the delimiter for CSV files.
+     * @var string
+     */
+    const REPORT_CSV_DELIMITER = ';';
 
     /**
      * Saves the getopt instance.
@@ -44,19 +54,73 @@ class Meter
     private $configuration = array();
 
     /**
+     * Saves the output formatter.
+     * @var OutputFormatter
+     */
+    private $formatter;
+
+    /**
+     * Defines if the report file is only temp.
+     * @var bool
+     */
+    private $reportTempFile = false;
+
+    /**
      * Constructs the Measurement
      */
     public function __construct()
     {
-        $this->getopt   = new Getopt(array(
+        $this->getopt = new Getopt(array(
             new Option(null, 'config', Getopt::REQUIRED_ARGUMENT),
-            new Option(null, 'version')
+            new Option(null, 'report', Getopt::REQUIRED_ARGUMENT),
+            new Option('v',  'version'),
+            new Option('h',  'help')
         ));
-        $this->getopt->setBanner(implode(PHP_EOL, array(
-                "\033[0;32mPerformanceMeasurement\033[0m version " . self::VERSION,
-                "\033[0;31m%s\033[0m",
-                "Usage: perf [options]"
-            )) . PHP_EOL);
+    }
+
+    /**
+     * Shows the usage.
+     * @return void
+     */
+    private function showUsage()
+    {
+        $this->writeln(array(
+            '',
+            '<info>Usage:</info>',
+            '  perf [options]',
+            '',
+            '<info>Options:</info>',
+            '  -v --version           <comment>Shows version</comment>',
+            '  -h --help              <comment>Shows this help</comment>',
+            '  --config=FILE          <comment>Defines the config file to use</comment>',
+            '  --report=FILE          <comment>Save path for the report file</comment>'
+        ));
+
+        exit(0);
+    }
+
+    /**
+     * Shows the version
+     * @return void
+     */
+    private function showVersion()
+    {
+        $this->writeln();
+        $this->writeln(sprintf('<info>perf</info> version <comment>%s</comment>', self::VERSION));
+
+        exit(0);
+    }
+
+    /**
+     * Shows a failure.
+     * @param \Exception $exception
+     * @return void
+     */
+    private function showFailure(\Exception $exception)
+    {
+        $this->writeln();
+        $this->writeln(sprintf('<error> Error: %s </error>', $exception->getMessage()));
+        $this->showUsage();
     }
 
     /**
@@ -70,7 +134,11 @@ class Meter
             $options = $this->getopt->getOptions();
 
             if (isset($options['version'])) {
-                $this->showBanner();
+                $this->showVersion();
+            }
+
+            if (isset($options['help'])) {
+                $this->showUsage();
             }
 
             if (!isset($options['config'])) {
@@ -83,33 +151,64 @@ class Meter
 
             $this->options = $options;
         } catch (\Exception $exception) {
-            $this->showBanner($exception->getMessage());
+            $this->showFailure($exception);
         }
     }
 
     /**
-     * Display the banner and exit the application.
-     * @param string $failure
+     * Initialize the output formatter.
      * @return void
      */
-    private function showBanner($failure = null)
+    private function initializeOutputFormatter()
     {
-        if (null === $failure) {
-            echo $this->getopt->getBanner() . PHP_EOL;
-        } else {
-            echo sprintf($this->getopt->getBanner(), PHP_EOL . $failure . PHP_EOL);
+        $this->formatter = new OutputFormatter($this->getOutputFormatterStyles());
+    }
+
+    /**
+     * Initialize the report file.
+     * @return void
+     */
+    private function initializeReportFile()
+    {
+        if (!isset($this->options['report'])) {
+            $this->options['report'] = tempnam('/tmp/', 'report');
+            $this->reportTempFile = true;
         }
 
-        exit(0);
+        file_put_contents($this->options['report'], '');
+    }
+
+    /**
+     * Removes the report file if only tmp.
+     * @return void
+     */
+    private function tearDownReportFile()
+    {
+        if ($this->reportTempFile) {
+            unlink($this->reportTempFile);
+        }
+    }
+
+    /**
+     * Returns the output formatter styles.
+     * @return OutputFormatterStyle[]
+     */
+    private function getOutputFormatterStyles()
+    {
+        return array(
+            'head' => new OutputFormatterStyle('cyan')
+        );
     }
 
     /**
      * Setup the measurement
      * @return void
      */
-    private function setup()
+    private function setUp()
     {
+        $this->initializeOutputFormatter();
         $this->parseArguments();
+        $this->initializeReportFile();
 
         try {
             $this->configuration = Yaml::parse(file_get_contents($this->options['config']));
@@ -119,55 +218,162 @@ class Meter
     }
 
     /**
+     * Tear down the application.
+     * @return void
+     */
+    private function tearDown()
+    {
+        $this->tearDownReportFile();
+    }
+
+    /**
      * Starts the measurements.
      * @return void
      */
     public function startMeasurement()
     {
-        $this->setup();
+        $this->setUp();
 
-        echo "Start profile for \033[1;33m" . $this->getParsedUrlHost($this->getBaseUrl()) . "\033[0m" . PHP_EOL;
-        echo "  requests: \033[1;32m" . $this->getNumberOfRequests() . "\033[0m" . PHP_EOL;
-        echo "  urls:     \033[1;32m" . count($this->getPages()) . "\033[0m" . PHP_EOL . PHP_EOL;
+        $this->printMeasureHeader();
 
+        $this->writeReport($this->measurePages($this->getPages()));
+        $this->printReport();
 
-        $measurements = array();
-        foreach ($this->getPages() as $page => $url) {
-            echo ".";
-            $measurements[$page] = $this->measure($url);
-        }
-        echo PHP_EOL;
-
-        $this->printReport($measurements);
-    }
-
-    private function printReport(array $measurements)
-    {
-        echo PHP_EOL;
-        foreach ($measurements as $url => $measurement) {
-            $body   = $measurement['body'];
-            $header = $measurement['header'];
-            echo "\033[1;34m" . $url . "\033[0m" . PHP_EOL;
-
-            echo sprintf('  median: %s (%s)', $this->formatTime($body['median']), $this->formatTime($header['median'])) . PHP_EOL;
-            echo sprintf('  min:    %s (%s)', $this->formatTime($body['min']), $this->formatTime($header['min'])) . PHP_EOL;
-            echo sprintf('  max:    %s (%s)', $this->formatTime($body['max']), $this->formatTime($header['max'])) . PHP_EOL;
-        }
-    }
-
-
-    private function formatTime($time)
-    {
-        return round($time, 3) . ' sec';
+        $this->tearDown();
     }
 
     /**
-     * returns the configuration.
+     * Prints the measurement header.
+     * @return void
+     */
+    private function printMeasureHeader()
+    {
+        $this->writeln(sprintf('Start profile for <info>%s</info>', $this->getParsedUrlHost($this->getBaseUrl())));
+        $this->writeln(sprintf('   requests: <comment>%s</comment>', $this->getNumberOfRequests()));
+        $this->writeln(sprintf('   urls:     <comment>%s</comment>', count($this->getPages())));
+    }
+
+    /**
+     * Measure the pages.
+     * @param array $pages
      * @return array
      */
-    private function getConfiguration()
+    private function measurePages(array $pages)
     {
-        return $this->configuration;
+        $measurements = array();
+        foreach ($pages as $page => $url) {
+            $measurements[$page] = $this->measure($url);
+        }
+        $this->writeln();
+        $this->writeln();
+
+        return $measurements;
+    }
+
+    /**
+     * Prints the report.
+     * @return void
+     */
+    private function printReport()
+    {
+        $contents = file_get_contents($this->getReportFile());
+        $lines    = explode(PHP_EOL, $contents);
+
+
+        $table = new Table(new ConsoleOutput());
+        $table->setHeaders(explode(self::REPORT_CSV_DELIMITER, array_shift($lines)));
+        foreach ($lines as $line) {
+            $table->addRow(explode(self::REPORT_CSV_DELIMITER, $line));
+        }
+        $table->render();
+    }
+
+    /**
+     * Writes the report file.
+     * @param array $measurements
+     * @return void
+     */
+    private function writeReport(array $measurements)
+    {
+        $this->writeln(sprintf('Write the report to <comment>%s</comment>', $this->getReportFile()));
+        $this->writeReportHeader(array(
+            'url',
+            'average',
+            'median',
+            'min',
+            'max',
+            'requests per sec',
+            'average (head)',
+            'median (head)',
+            'min (head)',
+            'max (head)',
+            'requests per sec (head)',
+        ));
+
+        foreach ($measurements as $url => $measurement) {
+            $body   = $measurement['body'];
+            $header = $measurement['header'];
+
+            $this->writeReportln(array(
+                $url,
+                $body['avg'],
+                $body['median'],
+                $body['min'],
+                $body['max'],
+                round($body['rps'], 2),
+                $header['avg'],
+                $header['median'],
+                $header['min'],
+                $header['max'],
+                round($header['rps'], 2),
+            ));
+        }
+    }
+
+    /**
+     * Writes the report header.
+     * @param array $header
+     * @return void
+     */
+    private function writeReportHeader(array $header)
+    {
+        file_put_contents($this->getReportFile(), implode(self::REPORT_CSV_DELIMITER, $header), FILE_APPEND);
+    }
+
+    /**
+     * Writes the report line.
+     * @param array $values
+     * @return void
+     */
+    private function writeReportln(array $values)
+    {
+        file_put_contents($this->getReportFile(), PHP_EOL . implode(self::REPORT_CSV_DELIMITER, $values), FILE_APPEND);
+    }
+
+    /**
+     * Writes the line to std out.
+     * @param string|array $line
+     * @return void
+     */
+    private function writeln($line = '')
+    {
+        if (is_array($line)) {
+            foreach ($line as $l) {
+                $this->writeln($l);
+            }
+        } else {
+            $this->write($line . PHP_EOL);
+        }
+    }
+
+    /**
+     * Writes a line.
+     * @param string $line
+     * @return void
+     */
+    private function write($line = '')
+    {
+        echo $this->formatter->format($line);
     }
 
     /**
@@ -216,15 +422,44 @@ class Meter
         return $this->configuration['requests'];
     }
 
+    /**
+     * Returns the report file.
+     * @return string
+     */
+    private function getReportFile()
+    {
+        return $this->options['report'];
+    }
 
+    /**
+     * Measures one URL.
+     * @param string $url
+     * @return array
+     */
     private function measure($url)
     {
+        $this->printMeasureStep();
         return array(
-            'body' => $this->doMeasurement($url, false),
+            'body'   => $this->doMeasurement($url, false),
             'header' => $this->doMeasurement($url, true)
         );
     }
 
+    /**
+     * Prints a step.
+     * @return void
+     */
+    private function printMeasureStep()
+    {
+        $this->write('<info>.</info>');
+    }
+
+    /**
+     * Do the measurement.
+     * @param string $url
+     * @param bool   $onlyHeader
+     * @return array
+     */
     private function doMeasurement($url, $onlyHeader = false)
     {
         $measurements = array();
@@ -251,14 +486,48 @@ class Meter
             curl_close($curlHandle);
         }
 
-        $measurements['median'] = array_sum($measurements['requests']) / count($measurements['requests']);
+        asort($measurements['requests']);
+
+        $measurements['total']  = array_sum($measurements['requests']);
+        $measurements['median'] = $this->calculateMedian($measurements['requests']);
+        $measurements['avg']    = $measurements['total'] / count($measurements['requests']);
         $measurements['max']    = max($measurements['requests']);
         $measurements['min']    = min($measurements['requests']);
+        $measurements['rps']    = count($measurements['requests']) / $measurements['total'];
 
         return $measurements;
     }
 
+    /**
+     * Calc the median.
+     * @param array $requestTimes
+     * @return float
+     */
+    private function calculateMedian(array $requestTimes)
+    {
+        $requestTimes = array_values($requestTimes);
+        $requestCount = count($requestTimes);
 
+        if ($requestCount % 2 == 0) {
+            // count is even -> arithmetic operation of two center values
+            $median = array_sum(array_slice($requestTimes, ($requestCount / 2 - 1), 2)) / 2;
+        } else {
+            if (count($requestTimes) == 1) {
+                $median = current($requestTimes);
+            } else {
+                $center = ($requestCount - 1) / 2;
+                $median = $requestTimes[$center];
+            }
+        }
+
+        return $median;
+    }
+
+    /**
+     * Makes the unique URL.
+     * @param string $url
+     * @return string
+     */
     private function makeUniqueUrl($url)
     {
         $delimiter = (strpos($url, '?') !== false) ? '&' : '?';

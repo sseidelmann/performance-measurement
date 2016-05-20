@@ -10,7 +10,8 @@
   },
   "require": {
     "ulrichsg/getopt-php": "2.3.*",
-    "symfony/yaml": "3.*"
+    "symfony/yaml": "3.*",
+    "symfony/console": "3.*"
   },
   "bin": [
     "bin/perf"
