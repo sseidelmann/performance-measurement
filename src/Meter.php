@@ -73,6 +73,7 @@ class Meter
         $this->getopt = new Getopt(array(
             new Option(null, 'config', Getopt::REQUIRED_ARGUMENT),
             new Option(null, 'report', Getopt::REQUIRED_ARGUMENT),
+            new Option(null, 'ttfb'),
             new Option('v',  'version'),
             new Option('h',  'help')
         ));
@@ -93,7 +94,8 @@ class Meter
             '  -v --version           <comment>Shows version</comment>',
             '  -h --help              <comment>Shows this help</comment>',
             '  --config=FILE          <comment>Defines the config file to use</comment>',
-            '  --report=FILE          <comment>Save path for the report file</comment>'
+            '  --report=FILE          <comment>Save path for the report file</comment>',
+            '  --ttfb                 <comment>Display the "time to first byte"</comment>'
         ));
 
         exit(0);
@@ -161,7 +163,7 @@ class Meter
      */
     private function initializeOutputFormatter()
     {
-        $this->formatter = new OutputFormatter($this->getOutputFormatterStyles());
+        $this->formatter = new OutputFormatter(true, $this->getOutputFormatterStyles());
     }
 
     /**
@@ -196,7 +198,8 @@ class Meter
     private function getOutputFormatterStyles()
     {
         return array(
-            'head' => new OutputFormatterStyle('cyan')
+            'head'    => new OutputFormatterStyle('cyan'),
+            'success' => new OutputFormatterStyle('green')
         );
     }
 
@@ -281,9 +284,9 @@ class Meter
 
 
         $table = new Table(new ConsoleOutput());
-        $table->setHeaders(explode(self::REPORT_CSV_DELIMITER, array_shift($lines)));
+        $table->setHeaders(str_getcsv(array_shift($lines), ';', '"'));
         foreach ($lines as $line) {
-            $table->addRow(explode(self::REPORT_CSV_DELIMITER, $line));
+            $table->addRow(str_getcsv($line, ';', '"'));
         }
         $table->render();
     }
@@ -295,38 +298,85 @@ class Meter
      */
     private function writeReport(array $measurements)
     {
+        $mapping = array(
+            'average'          => 'body_avg',
+            'median'           => 'body_median',
+            'min'              => 'body_min',
+            'max'              => 'body_max',
+            'requests per sec' => 'body_rps',
+            'average (head)'          => 'header_avg',
+            'median (head)'           => 'header_median',
+            'min (head)'              => 'header_min',
+            'max (head)'              => 'header_max',
+            'requests per sec (head)' => 'header_rps',
+        );
+
+        if (isset($this->options['ttfb'])) {
+            $mapping = array_merge($mapping, array(
+                '[ttfb] average'          => 'body_ttfb_avg',
+                '[ttfb] median'           => 'body_ttfb_median',
+                '[ttfb] min'              => 'body_ttfb_min',
+                '[ttfb] max'              => 'body_ttfb_max',
+                '[ttfb] requests per sec' => 'body_ttfb_rps',
+                '[ttfb] average (head)'          => 'header_ttfb_avg',
+                '[ttfb] median (head)'           => 'header_ttfb_median',
+                '[ttfb] min (head)'              => 'header_ttfb_min',
+                '[ttfb] max (head)'              => 'header_ttfb_max',
+                '[ttfb] requests per sec (head)' => 'header_ttfb_rps',
+            ));
+        }
+
         $this->writeln(sprintf('Write the report to <comment>%s</comment>', $this->getReportFile()));
-        $this->writeReportHeader(array(
-            'url',
-            'average',
-            'median',
-            'min',
-            'max',
-            'requests per sec',
-            'average (head)',
-            'median (head)',
-            'min (head)',
-            'max (head)',
-            'requests per sec (head)',
-        ));
+        $this->writeReportHeader(array_merge(array('url', 'status', 'type'), array_keys($mapping), array('failure')));
 
         foreach ($measurements as $url => $measurement) {
             $body   = $measurement['body'];
             $header = $measurement['header'];
 
-            $this->writeReportln(array(
-                $url,
-                $body['avg'],
-                $body['median'],
-                $body['min'],
-                $body['max'],
-                round($body['rps'], 2),
-                $header['avg'],
-                $header['median'],
-                $header['min'],
-                $header['max'],
-                round($header['rps'], 2),
-            ));
+            $m = array();
+            foreach ($measurement as $measurementKey => $measurementPart) {
+                foreach ($body as $key => $value) {
+                    $m[$measurementKey . '_' . $key] = $value;
+                }
+            }
+
+
+            if (count($body) == 0 || count($header) == 0) {
+                $this->writeReportln(
+                    array_merge(
+                        array(
+                            $url,
+                            '',
+                            ''
+                        ),
+                        array_fill(
+                            3,
+                            count($mapping),
+                            ''
+                        ),
+                        array(
+                            true
+                        )
+                    )
+                );
+            } else {
+                $this->writeReportln(array_merge(
+                    array(
+                        $url,
+                        $measurement['body']['info']['http_code'],
+                        $measurement['body']['info']['content_type']
+                    ),
+                    array_map(
+                        function ($key) use ($m) {
+                            return $m[$key];
+                        },
+                        array_values($mapping)
+                    ),
+                    array(
+                        false
+                    )
+                ));
+            }
         }
     }
 
@@ -337,7 +387,7 @@ class Meter
      */
     private function writeReportHeader(array $header)
     {
-        file_put_contents($this->getReportFile(), implode(self::REPORT_CSV_DELIMITER, $header), FILE_APPEND);
+        file_put_contents($this->getReportFile(), $this->prepareCsvValues($header), FILE_APPEND);
     }
 
     /**
@@ -347,7 +397,31 @@ class Meter
      */
     private function writeReportln(array $values)
     {
-        file_put_contents($this->getReportFile(), PHP_EOL . implode(self::REPORT_CSV_DELIMITER, $values), FILE_APPEND);
+        file_put_contents($this->getReportFile(), PHP_EOL . $this->prepareCsvValues($values), FILE_APPEND);
+    }
+
+    /**
+     * Prepares the values.
+     * @param array $values
+     * @return string
+     */
+    private function prepareCsvValues(array $values)
+    {
+        return implode(
+            self::REPORT_CSV_DELIMITER,
+            array_map(
+                function ($value) {
+                    if (is_numeric($value)) {
+                        return $value;
+                    }
+                    if (is_bool($value)) {
+                        return $value ? 1 : '';
+                    }
+                    return sprintf('"%s"', str_replace('"', '\'', $value));
+                },
+                $values
+            )
+        );
     }
 
     /**
@@ -438,7 +512,6 @@ class Meter
      */
     private function measure($url)
     {
-        $this->printMeasureStep();
         return array(
             'body'   => $this->doMeasurement($url, false),
             'header' => $this->doMeasurement($url, true)
@@ -449,23 +522,28 @@ class Meter
      * Prints a step.
      * @return void
      */
-    private function printMeasureStep()
+    private function printMeasureStep($failure = false)
     {
-        $this->write('<info>.</info>');
+        if ($failure) {
+            $this->write('<error>F</error>');
+        } else {
+            $this->write('<success>.</success>');
+        }
     }
 
     /**
      * Do the measurement.
      * @param string $url
      * @param bool   $onlyHeader
-     * @return array
+     * @return array|bool
      */
     private function doMeasurement($url, $onlyHeader = false)
     {
         $measurements = array();
+        $urlInfo      = array();
 
         for ($i = 0; $i < $this->getNumberOfRequests(); $i++) {
-
+            $failure      = true;
             $uniqueUrl    = $this->makeUniqueUrl($url);
             $curlHandle   = curl_init($uniqueUrl);
 
@@ -481,19 +559,42 @@ class Meter
 
             if (curl_exec($curlHandle)) {
                 $info = curl_getinfo($curlHandle);
+                $measurements['ttfb'][$uniqueUrl]     = $info['starttransfer_time'];
                 $measurements['requests'][$uniqueUrl] = $info['total_time'];
+                $failure                              = false;
+
+                if (count($urlInfo) == 0) {
+                    $urlInfo = array(
+                        'http_code'    => $info['http_code'],
+                        'content_type' => $info['content_type']
+                    );
+                }
             }
+
+            $this->printMeasureStep($failure);
+
             curl_close($curlHandle);
+        }
+
+        if (!is_array($measurements['requests']) || count($measurements['requests']) == 0) {
+            return array();
         }
 
         asort($measurements['requests']);
 
-        $measurements['total']  = array_sum($measurements['requests']);
-        $measurements['median'] = $this->calculateMedian($measurements['requests']);
-        $measurements['avg']    = $measurements['total'] / count($measurements['requests']);
-        $measurements['max']    = max($measurements['requests']);
-        $measurements['min']    = min($measurements['requests']);
-        $measurements['rps']    = count($measurements['requests']) / $measurements['total'];
+        $measurements['total']       = array_sum($measurements['requests']);
+        $measurements['median']      = $this->calculateMedian($measurements['requests']);
+        $measurements['avg']         = $measurements['total'] / count($measurements['requests']);
+        $measurements['max']         = max($measurements['requests']);
+        $measurements['min']         = min($measurements['requests']);
+        $measurements['rps']         = round(count($measurements['requests']) / $measurements['total'], 2);
+        $measurements['ttfb_total']  = array_sum($measurements['ttfb']);
+        $measurements['ttfb_median'] = $this->calculateMedian($measurements['ttfb']);
+        $measurements['ttfb_avg']    = $measurements['ttfb_total'] / count($measurements['ttfb']);
+        $measurements['ttfb_max']    = max($measurements['ttfb']);
+        $measurements['ttfb_min']    = min($measurements['ttfb']);
+        $measurements['ttfb_rps']    = round(count($measurements['ttfb']) / $measurements['ttfb_total'], 2);
+        $measurements['info']        = $urlInfo;
 
         return $measurements;
     }
