@@ -576,7 +576,7 @@ class Meter
             curl_close($curlHandle);
         }
 
-        if (!is_array($measurements['requests']) || count($measurements['requests']) == 0) {
+        if (!isset($measurements['requests']) || !is_array($measurements['requests']) || count($measurements['requests']) == 0) {
             return array();
         }
 
