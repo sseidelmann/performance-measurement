@@ -2,6 +2,9 @@
 All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](http://semver.org/).
 
+## [1.2.2] - [2016-06-01]
+- [TASK] FIXED the symfony compenents versions
+
 ## [1.2.1] - [2016-05-20]
 - [TASK] FIXED warning if key is not set
 
