@@ -187,7 +187,7 @@ class Meter
     private function tearDownReportFile()
     {
         if ($this->reportTempFile) {
-            unlink($this->reportTempFile);
+            unlink($this->options['report']);
         }
     }
 
